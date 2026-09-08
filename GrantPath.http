@@ -1,0 +1,191 @@
+@host = http://localhost:5120
+@admin = user:root
+@member = user:alice
+@blocked = user:bob
+@stranger = user:mallory
+@org = org:acme
+@document = document:onboarding
+@confidential = document:incident-report
+
+###
+# The demonstration domain, created by the seeder:
+#
+#   org:acme  →  workspace:engineering  →  folder:handbooks  →  document:onboarding
+#                                                           →  document:incident-report
+#
+# user:alice holds exactly one tuple, member of org:acme. Nothing is written anywhere near either
+# document. user:bob holds the same tuple plus an explicit block on the incident report.
+# user:mallory holds nothing at all.
+###
+
+### Deny by default. Mallory is related to nothing, and the resource exists inside a real hierarchy.
+POST {{host}}/authz/check
+Content-Type: application/json
+
+{ "subject": "{{stranger}}", "relation": "viewer", "resource": "{{document}}" }
+
+### One org-level tuple reaches a document four levels down. Read `reason.grantedAt` in the response.
+POST {{host}}/authz/check
+Content-Type: application/json
+
+{ "subject": "{{member}}", "relation": "viewer", "resource": "{{document}}" }
+
+### Inheritance carries the role rather than flattening it. A member may read and may not edit.
+POST {{host}}/authz/check
+Content-Type: application/json
+
+{ "subject": "{{member}}", "relation": "editor", "resource": "{{document}}" }
+
+### An explicit block beats everything it inherited, and only on the document it names.
+POST {{host}}/authz/check
+Content-Type: application/json
+
+{ "subject": "{{blocked}}", "relation": "viewer", "resource": "{{confidential}}" }
+
+### The same person, the other document. Still allowed: a block is not a demotion.
+POST {{host}}/authz/check
+Content-Type: application/json
+
+{ "subject": "{{blocked}}", "relation": "viewer", "resource": "{{document}}" }
+
+###
+# Attributes narrow and never widen.
+#
+# The seeded policy denies a confidential document to anyone whose clearance is not secret or above.
+# The relationship still allows it; the attribute layer objects; the answer is deny.
+###
+POST {{host}}/authz/check
+Content-Type: application/json
+
+{
+  "subject": "{{member}}",
+  "relation": "viewer",
+  "resource": "{{confidential}}",
+  "context": {
+    "subject": { "clearance": "public" },
+    "resource": { "classification": "confidential" }
+  }
+}
+
+### Same request, adequate clearance. Now nothing objects.
+POST {{host}}/authz/check
+Content-Type: application/json
+
+{
+  "subject": "{{member}}",
+  "relation": "viewer",
+  "resource": "{{confidential}}",
+  "context": {
+    "subject": { "clearance": "secret" },
+    "resource": { "classification": "confidential" }
+  }
+}
+
+###
+# The attribute layer cannot manufacture access. Mallory has no relationship, and the context is as
+# favourable as it can be. The answer is still deny, and `relationshipAllowed` says why.
+###
+POST {{host}}/authz/check
+Content-Type: application/json
+
+{
+  "subject": "{{stranger}}",
+  "relation": "viewer",
+  "resource": "{{confidential}}",
+  "context": { "subject": { "clearance": "top-secret" } }
+}
+
+### Why was that decided that way? Paste a requestId from any response above.
+@requestId = paste-a-request-id-here
+
+GET {{host}}/authz/why/{{requestId}}
+
+### The trail, newest first. Filter by subject, resource or decision.
+GET {{host}}/authz/decisions?limit=25
+
+### Only the denials, for one subject.
+GET {{host}}/authz/decisions?subject={{member}}&decision=Deny&limit=25
+
+###
+# The database path. This endpoint runs a plain SELECT with no check, no facade and no filtering in
+# application code. What bounds the result is a row-level security policy on the table.
+###
+GET {{host}}/demo/documents?subject={{member}}
+
+### The same query as somebody the projection has never heard of.
+GET {{host}}/demo/documents?subject={{stranger}}
+
+###
+# Administration. Every route below is gated by Check(subject, administrator, platform:grantpath),
+# which is a relationship like any other. Try it as somebody who does not hold it.
+###
+GET {{host}}/admin/tuples?resource={{org}}
+X-GrantPath-Subject: {{stranger}}
+
+### The same call as the operator.
+GET {{host}}/admin/tuples?resource={{org}}
+X-GrantPath-Subject: {{admin}}
+
+### Grant Mallory membership of the org. One tuple, four levels of consequence.
+POST {{host}}/admin/tuples
+Content-Type: application/json
+X-GrantPath-Subject: {{admin}}
+
+{ "writes": [ { "subject": "{{stranger}}", "relation": "member", "resource": "{{org}}" } ] }
+
+### Now re-run the first request in this file. Then read the database path for the same subject.
+GET {{host}}/demo/documents?subject={{stranger}}
+
+###
+# Revoke it. The relationship store refuses on the very next check, and the projection rows are removed
+# in this same request rather than at the next poll.
+###
+POST {{host}}/admin/tuples
+Content-Type: application/json
+X-GrantPath-Subject: {{admin}}
+
+{ "deletes": [ { "subject": "{{stranger}}", "relation": "member", "resource": "{{org}}" } ] }
+
+### Immediately, with no wait.
+GET {{host}}/demo/documents?subject={{stranger}}
+
+### Attribute policies.
+GET {{host}}/admin/policies?resourceType=document
+X-GrantPath-Subject: {{admin}}
+
+### A policy that cannot be parsed is refused when it is written, not when a decision needs it.
+POST {{host}}/admin/policies
+Content-Type: application/json
+X-GrantPath-Subject: {{admin}}
+
+{
+  "name": "Missing the scope prefix",
+  "resourceType": "document",
+  "effect": "Deny",
+  "priority": 10,
+  "condition": { "attribute": "classification", "operator": "equals", "value": "secret" }
+}
+
+### A well-formed one.
+POST {{host}}/admin/policies
+Content-Type: application/json
+X-GrantPath-Subject: {{admin}}
+
+{
+  "name": "Nothing confidential outside working hours",
+  "resourceType": "document",
+  "effect": "Deny",
+  "priority": 50,
+  "condition": {
+    "allOf": [
+      { "attribute": "resource.classification", "operator": "equals", "value": "confidential" },
+      { "attribute": "environment.hour", "operator": "greaterThanOrEqual", "value": 20 }
+    ]
+  }
+}
+
+### Liveness.
+GET {{host}}/health/live
+
+### Readiness, which includes Postgres and the relationship store.
+GET {{host}}/health/ready

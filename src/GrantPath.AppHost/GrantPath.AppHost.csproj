@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Sdk Name="Aspire.AppHost.Sdk" Version="13.4.6" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsAspireHost>true</IsAspireHost>
+
+    <!--
+      The Aspire CLI bundle is fetched at build time. Requiring it would make a plain `dotnet build` of
+      this repository depend on a network round trip, so the host uses the packaged dashboard and DCP
+      instead. Install the Aspire CLI from https://get.aspire.dev for the newer tooling features.
+    -->
+    <AspireUseCliBundle>false</AspireUseCliBundle>
+    <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
+    <UserSecretsId>grantpath-apphost</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.AppHost" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../GrantPath.Api/GrantPath.Api.csproj" />
+  </ItemGroup>
+
+</Project>

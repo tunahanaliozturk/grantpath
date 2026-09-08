@@ -1,0 +1,182 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  build:
+    name: build and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      # Whitespace and style only. Analyzer-level style is already enforced by EnforceCodeStyleInBuild
+      # with warnings as errors, so running the full formatter here would build a second workspace for
+      # no benefit.
+      - name: Verify formatting
+        run: |
+          dotnet format whitespace --verify-no-changes --no-restore
+          dotnet format style --verify-no-changes --no-restore
+
+      # Reads the licence terms of every package in the tree, at every depth, from the restored packages
+      # on disk. A dependency carrying a fee or a field-of-use restriction fails the build instead of
+      # arriving quietly. It is the reason Aspire is pinned below 13.5.
+      - name: Audit dependency licences
+        run: dotnet run --project tools/GrantPath.LicenseAudit --configuration Release --no-build -- .
+
+      - name: Unit tests
+        run: dotnet run --project tests/GrantPath.UnitTests --configuration Release --no-build
+
+  integration:
+    name: integration suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      # Testcontainers starts a real Postgres and a real OpenFGA against the Docker daemon on the runner,
+      # and the service runs on a real socket. The behaviours under test are relationship evaluation and
+      # row-level security, and a substitute for either would only prove the substitute was configured.
+      - name: Integration tests
+        run: dotnet run --project tests/GrantPath.IntegrationTests --configuration Release
+
+  benchmark-smoke:
+    name: benchmark smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      # A single dry iteration, only to catch a benchmark that no longer compiles or that throws. Shared
+      # runners are far too noisy to back nanosecond claims, so the published numbers are produced on
+      # known hardware and committed under docs/benchmark-results.
+      - name: Benchmarks compile and run
+        run: dotnet run -c Release --project benchmarks/GrantPath.Benchmarks -- --filter "*" --job Dry
+
+  compose:
+    name: docker compose demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The quick start in the README is a promise. This runs it.
+      - name: Bring the stack up
+        run: docker compose up -d --build
+
+      - name: Wait for the service
+        run: |
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5120/health/ready || true)
+            if [ "$code" = "200" ]; then echo "up"; exit 0; fi
+            sleep 2
+          done
+          docker compose logs --tail 120
+          exit 1
+
+      - name: Deny by default, with no policy saying so
+        run: |
+          body='{"subject":"user:mallory","relation":"viewer","resource":"document:onboarding"}'
+          out=$(curl -sf localhost:5120/authz/check -H 'content-type: application/json' -d "$body")
+          echo "$out" | jq -e '.allowed == false' > /dev/null
+          echo "$out" | jq -e '.relationshipAllowed == false' > /dev/null
+
+      - name: One org tuple reaches a document four levels down
+        run: |
+          body='{"subject":"user:alice","relation":"viewer","resource":"document:onboarding"}'
+          out=$(curl -sf localhost:5120/authz/check -H 'content-type: application/json' -d "$body")
+          echo "$out" | jq -e '.allowed == true' > /dev/null
+          echo "$out" | jq -e '.reason.grantedAt == "org:acme"' > /dev/null
+          echo "$out" | jq -e '.reason.relationshipPath | length == 4' > /dev/null
+
+      - name: Inheritance carries the role rather than flattening it
+        run: |
+          body='{"subject":"user:alice","relation":"editor","resource":"document:onboarding"}'
+          curl -sf localhost:5120/authz/check -H 'content-type: application/json' -d "$body" \
+            | jq -e '.allowed == false' > /dev/null
+
+      - name: An attribute policy narrows but cannot widen
+        run: |
+          narrowed='{"subject":"user:alice","relation":"viewer","resource":"document:incident-report","context":{"subject":{"clearance":"public"},"resource":{"classification":"confidential"}}}'
+          out=$(curl -sf localhost:5120/authz/check -H 'content-type: application/json' -d "$narrowed")
+          echo "$out" | jq -e '.relationshipAllowed == true' > /dev/null
+          echo "$out" | jq -e '.attributeVerdict == "Deny"' > /dev/null
+          echo "$out" | jq -e '.allowed == false' > /dev/null
+
+          unrelated='{"subject":"user:mallory","relation":"viewer","resource":"document:incident-report","context":{"subject":{"clearance":"top-secret"}}}'
+          curl -sf localhost:5120/authz/check -H 'content-type: application/json' -d "$unrelated" \
+            | jq -e '.allowed == false' > /dev/null
+
+      - name: The decision can be explained afterwards
+        run: |
+          body='{"subject":"user:alice","relation":"viewer","resource":"document:onboarding"}'
+          id=$(curl -sf localhost:5120/authz/check -H 'content-type: application/json' -d "$body" | jq -r '.requestId')
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "localhost:5120/authz/why/$id")
+            if [ "$code" = "200" ]; then break; fi
+            sleep 1
+          done
+          curl -sf "localhost:5120/authz/why/$id" | jq -e '.reason.grantedAt == "org:acme"' > /dev/null
+
+      - name: The database path is bounded by the same decision
+        run: |
+          curl -sf 'localhost:5120/demo/documents?subject=user:alice' | jq -e 'length == 2' > /dev/null
+          curl -sf 'localhost:5120/demo/documents?subject=user:mallory' | jq -e 'length == 0' > /dev/null
+
+      - name: Administration is itself an authorization decision
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" 'localhost:5120/admin/tuples?resource=org:acme' \
+            -H 'X-GrantPath-Subject: user:mallory')
+          test "$code" = "403"
+          curl -sf 'localhost:5120/admin/tuples?resource=org:acme' \
+            -H 'X-GrantPath-Subject: user:root' | jq -e 'length > 0' > /dev/null
+
+      - name: A revoke reaches the database path immediately
+        run: |
+          curl -sf -X POST localhost:5120/admin/tuples -H 'content-type: application/json' \
+            -H 'X-GrantPath-Subject: user:root' \
+            -d '{"writes":[{"subject":"user:mallory","relation":"member","resource":"org:acme"}]}' > /dev/null
+
+          n=0
+          for i in $(seq 1 20); do
+            n=$(curl -sf 'localhost:5120/demo/documents?subject=user:mallory' | jq 'length')
+            if [ "$n" = "2" ]; then break; fi
+            sleep 1
+          done
+          test "$n" = "2"
+
+          curl -sf -X POST localhost:5120/admin/tuples -H 'content-type: application/json' \
+            -H 'X-GrantPath-Subject: user:root' \
+            -d '{"deletes":[{"subject":"user:mallory","relation":"member","resource":"org:acme"}]}' > /dev/null
+
+          curl -sf 'localhost:5120/demo/documents?subject=user:mallory' | jq -e 'length == 0' > /dev/null
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

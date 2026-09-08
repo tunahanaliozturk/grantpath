@@ -1,0 +1,84 @@
+name: grantpath
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: grantpath
+      POSTGRES_USER: grantpath
+      POSTGRES_PASSWORD: grantpath
+    ports:
+      - "5432:5432"
+    volumes:
+      # Postgres 18 keeps its data in a versioned subdirectory, so the mount goes one level up.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grantpath -d grantpath"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # OpenFGA keeps its own schema and refuses to start against an empty database, so the migration runs
+  # as a separate one-shot container rather than being folded into the server's startup.
+  openfga-migrate:
+    image: openfga/openfga:v1.19.0
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://grantpath:grantpath@postgres:5432/grantpath?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  openfga:
+    image: openfga/openfga:v1.19.0
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://grantpath:grantpath@postgres:5432/grantpath?sslmode=disable
+      OPENFGA_LOG_LEVEL: warn
+      OPENFGA_PLAYGROUND_ENABLED: "false"
+    ports:
+      # Only the HTTP API is published. OpenFGA also serves gRPC on 8081, which nothing outside the
+      # network speaks to: the health check runs grpc_health_probe inside the container.
+      - "8080:8080"
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  grantpath:
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openfga:
+        condition: service_healthy
+    ports:
+      - "5120:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__grantpath: Host=postgres;Port=5432;Database=grantpath;Username=grantpath;Password=grantpath
+      GrantPath__Rebac__ApiUrl: http://openfga:8080
+
+      # Development settings, written out rather than inherited, because each one would be wrong on a
+      # public host: migrating on startup races itself during a rolling deploy, the demo domain creates
+      # relationships nobody chose, and anonymous callers can ask about any subject.
+      GrantPath__Database__MigrateOnStartup: "true"
+      GrantPath__Database__SeedDemoData: "true"
+      GrantPath__Callers__AllowAnonymous: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  postgres-data:

@@ -1,0 +1,43 @@
+model
+  schema 1.1
+
+# The readable form of the relationship model. The version that actually runs is built in typed C# at
+# src/GrantPath.Rebac/AuthorizationModel.cs, because no .NET parser for this DSL ships with the SDK.
+# A test asserts the two agree on every type and relation name, so this file cannot quietly fall behind.
+
+type user
+
+# The service authorizes access to its own administration through the same path as everything else.
+type platform
+  relations
+    define administrator: [user]
+
+type org
+  relations
+    define member: [user]
+    define admin: [user]
+    define viewer: member or admin
+
+type workspace
+  relations
+    define parent: [org]
+    define member: [user] or member from parent
+    define admin: [user] or admin from parent
+    define viewer: member or admin
+
+type folder
+  relations
+    define parent: [workspace]
+    define viewer: [user] or viewer from parent
+    define editor: [user] or admin from parent
+    define owner: [user] or admin from parent
+
+# A relationship graph only ever grants, so the one narrowing rule in the domain, "this person is
+# explicitly excluded from this document", has to be a subtraction.
+type document
+  relations
+    define parent: [folder]
+    define blocked: [user]
+    define viewer: ([user] or viewer from parent) but not blocked
+    define editor: ([user] or editor from parent) but not blocked
+    define owner: ([user] or owner from parent) but not blocked

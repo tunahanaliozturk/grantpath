@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="EFCore.NamingConventions" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../GrantPath.Abac/GrantPath.Abac.csproj" />
+    <ProjectReference Include="../GrantPath.Rebac/GrantPath.Rebac.csproj" />
+  </ItemGroup>
+
+</Project>

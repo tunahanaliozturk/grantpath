@@ -1,0 +1,23 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/GrantPath.Benchmarks/GrantPath.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/load/">
+    <Project Path="load/GrantPath.LoadTests/GrantPath.LoadTests.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/GrantPath.Abac/GrantPath.Abac.csproj" />
+    <Project Path="src/GrantPath.Api/GrantPath.Api.csproj" />
+    <Project Path="src/GrantPath.AppHost/GrantPath.AppHost.csproj" />
+    <Project Path="src/GrantPath.Data/GrantPath.Data.csproj" />
+    <Project Path="src/GrantPath.Rebac/GrantPath.Rebac.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GrantPath.IntegrationTests/GrantPath.IntegrationTests.csproj" />
+    <Project Path="tests/GrantPath.TestSupport/GrantPath.TestSupport.csproj" />
+    <Project Path="tests/GrantPath.UnitTests/GrantPath.UnitTests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/GrantPath.LicenseAudit/GrantPath.LicenseAudit.csproj" />
+  </Folder>
+</Solution>
