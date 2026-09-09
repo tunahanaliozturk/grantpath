@@ -74,7 +74,7 @@ services:
       GrantPath__Database__SeedDemoData: "true"
       GrantPath__Callers__AllowAnonymous: "true"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready || exit 1"]
+      test: ["CMD", "/usr/local/bin/healthcheck", "/health/ready"]
       interval: 10s
       timeout: 3s
       retries: 12

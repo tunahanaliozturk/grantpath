@@ -23,6 +23,11 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS runtime
 WORKDIR /app
 
 # The image ships a non-root user. The only reason services still run as root is that nobody changed it.
+# The runtime image has neither curl nor wget, so the container health check is a short bash
+# script that speaks HTTP over /dev/tcp rather than a network client installed into a runtime
+# image for one request.
+COPY --chmod=755 docker/healthcheck.sh /usr/local/bin/healthcheck
+
 USER $APP_UID
 
 ENV ASPNETCORE_HTTP_PORTS=8080
